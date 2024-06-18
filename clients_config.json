@@ -1,0 +1,8 @@
+{
+    "root_address": "localhost:9000",
+    "queries": [
+        "hello world",
+        "golang sockets",
+        "distributed systems"
+    ]
+}

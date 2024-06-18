@@ -1,0 +1,7 @@
+{
+    "address": "localhost:9000",
+    "replicas": [
+        "localhost:9001",
+        "localhost:9002"
+    ]
+}
