@@ -1,108 +1,133 @@
 package main
 
 import (
-    "encoding/json"
-    "fmt"
-    "net"
-    "os"
-    "strings"
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"net"
+	"os"
+	"strings"
 )
 
 type RootConfig struct {
-    Address  string   `json:"address"`
-    Replicas []string `json:"replicas"`
-}
-
-type QueryResponse struct {
-    Filename    string `json:"filename"`
-    Occurrences int    `json:"occurrences"`
+	RootAddress string   `json:"root_address"`
+	Replicas    []string `json:"replicas"`
 }
 
 func main() {
-    configFile, err := os.ReadFile("root_config.json")
-    if err != nil {
-        panic(err)
-    }
+	if len(os.Args) < 2 {
+		fmt.Println("Usage: go run root.go <root_config_file>")
+		return
+	}
 
-    var config RootConfig
-    err = json.Unmarshal(configFile, &config)
-    if err != nil {
-        panic(err)
-    }
+	rootConfigFile := os.Args[1]
+	config := readConfig(rootConfigFile)
+	rootAddress := config.RootAddress
+	replicaAddresses := config.Replicas
 
-    ln, err := net.Listen("tcp", config.Address)
-    if err != nil {
-        panic(err)
-    }
-    defer ln.Close()
-    fmt.Println("Root node listening on", config.Address)
+	listener, err := net.Listen("tcp", rootAddress)
+	if err != nil {
+		fmt.Println("Error listening:", err)
+		return
+	}
+	defer listener.Close()
 
-    for {
-        conn, err := ln.Accept()
-        if err != nil {
-            panic(err)
-        }
-        go handleClient(conn, config.Replicas)
-    }
+	fmt.Println("Root node listening on", rootAddress)
+
+	for {
+		conn, err := listener.Accept()
+		if err != nil {
+			fmt.Println("Error accepting connection:", err)
+			continue
+		}
+		go handleClientRequest(conn, replicaAddresses)
+	}
 }
 
-func handleClient(conn net.Conn, replicas []string) {
-    defer conn.Close()
+func readConfig(filename string) RootConfig {
+	file, err := os.Open(filename)
+	if err != nil {
+		fmt.Println("Error opening config file:", err)
+		os.Exit(1)
+	}
+	defer file.Close()
 
-    buf := make([]byte, 1024)
-    n, err := conn.Read(buf)
-    if err != nil {
-        panic(err)
-    }
+	var config RootConfig
+	decoder := json.NewDecoder(file)
+	err = decoder.Decode(&config)
+	if err != nil {
+		fmt.Println("Error decoding JSON:", err)
+		os.Exit(1)
+	}
 
-    query := string(buf[:n])
-    keywords := strings.Fields(query)
-    numReplicas := len(replicas)
-    chunkSize := (len(keywords) + numReplicas - 1) / numReplicas
+	return config
+}
 
-    responses := make(chan []QueryResponse, numReplicas)
-    for i, replica := range replicas {
-        start := i * chunkSize
-        end := start + chunkSize
-        if end > len(keywords) {
-            end = len(keywords)
-        }
+func handleClientRequest(conn net.Conn, replicaAddresses []string) {
+	defer conn.Close()
 
-        go func(replica string, keywords []string) {
-            conn, err := net.Dial("tcp", replica)
-            if err != nil {
-                panic(err)
-            }
-            defer conn.Close()
+	reader := bufio.NewReader(conn)
+	query, err := reader.ReadString('\n')
+	if err != nil {
+		fmt.Println("Error reading query:", err)
+		return
+	}
+	query = strings.TrimSpace(query)
+	keywords := strings.Split(query, " ")
+	fmt.Printf("Received query from client: %v\n", keywords)
 
-            query := strings.Join(keywords, " ")
-            conn.Write([]byte(query))
+	numReplicas := len(replicaAddresses)
+	chunks := splitKeywords(keywords, numReplicas)
 
-            buf := make([]byte, 4096)
-            n, err := conn.Read(buf)
-            if err != nil {
-                panic(err)
-            }
+	resultsChan := make(chan string, numReplicas)
+	for i, chunk := range chunks {
+		go queryReplica(replicaAddresses[i], chunk, resultsChan)
+	}
 
-            var response []QueryResponse
-            err = json.Unmarshal(buf[:n], &response)
-            if err != nil {
-                panic(err)
-            }
+	results := ""
+	for i := 0; i < numReplicas; i++ {
+		results += <-resultsChan + "\n"
+	}
 
-            responses <- response
-        }(replica, keywords[start:end])
-    }
+	fmt.Printf("Sending combined results to client: %s\n", results)
+	conn.Write([]byte(results))
+}
 
-    var finalResults []QueryResponse
-    for i := 0; i < numReplicas; i++ {
-        response := <-responses
-        finalResults = append(finalResults, response...)
-    }
+func splitKeywords(keywords []string, numChunks int) [][]string {
+	var chunks [][]string
+	chunkSize := (len(keywords) + numChunks - 1) / numChunks
+	for i := 0; i < len(keywords); i += chunkSize {
+		end := i + chunkSize
+		if end > len(keywords) {
+			end = len(keywords)
+		}
+		chunks = append(chunks, keywords[i:end])
+	}
+	return chunks
+}
 
-    responseBytes, err := json.Marshal(finalResults)
-    if err != nil {
-        panic(err)
-    }
-    conn.Write(responseBytes)
+func queryReplica(replicaAddress string, keywords []string, resultsChan chan string) {
+	conn, err := net.Dial("tcp", replicaAddress)
+	if err != nil {
+		fmt.Println("Error connecting to replica:", err)
+		resultsChan <- ""
+		return
+	}
+	defer conn.Close()
+
+	message := strings.Join(keywords, ",")
+	fmt.Printf("Sending query to replica %s: %s\n", replicaAddress, message)
+	conn.Write([]byte(message + "\n"))
+
+	reader := bufio.NewReader(conn)
+	response, err := reader.ReadString('\n')
+	if err != nil {
+		fmt.Println("Error reading response from replica:", err)
+		resultsChan <- ""
+		return
+	}
+	response = strings.TrimSpace(response)
+	fmt.Printf("Received response from replica %s: %s\n", replicaAddress, response)
+
+	resultsChan <- response
 }

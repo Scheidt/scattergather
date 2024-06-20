@@ -1,5 +1,4 @@
 {
-    "root_address": "localhost:8000",
     "replicas": [
       "localhost:9001",
       "localhost:9002",

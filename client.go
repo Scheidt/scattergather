@@ -1,66 +1,73 @@
 package main
 
 import (
-    "encoding/json"
-    "fmt"
-    "math/rand"
-    "net"
-    "os"
-    "time"
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"math/rand"
+	"net"
+	"os"
+	"time"
 )
 
 type ClientConfig struct {
-    RootAddress string   `json:"root_address"`
-    Queries     []string `json:"queries"`
-}
-
-type QueryResponse struct {
-    Filename    string `json:"filename"`
-    Occurrences int    `json:"occurrences"`
+	RootAddress string   `json:"root_address"`
+	Queries     []string `json:"queries"`
 }
 
 func main() {
-    configFile, err := os.ReadFile("clients_config.json")
-    if err != nil {
-        panic(err)
-    }
+	if len(os.Args) < 2 {
+		fmt.Println("Usage: go run client.go <client_config_file>")
+		return
+	}
 
-    var config ClientConfig
-    err = json.Unmarshal(configFile, &config)
-    if err != nil {
-        panic(err)
-    }
+	clientConfigFile := os.Args[1]
+	config := readConfig(clientConfigFile)
+	rootAddress := config.RootAddress
+	queries := config.Queries
 
-    for _, query := range config.Queries {
-        sendQuery(config.RootAddress, query)
-        time.Sleep(time.Duration(1+rand.Intn(2)) * time.Second)
-    }
+	for _, query := range queries {
+		time.Sleep(time.Duration(rand.Intn(2)+1) * time.Second)
+		sendQuery(rootAddress, query)
+	}
 }
 
-func sendQuery(address, query string) {
-    conn, err := net.Dial("tcp", address)
-    if err != nil {
-        panic(err)
-    }
-    defer conn.Close()
+func readConfig(filename string) ClientConfig {
+	file, err := os.Open(filename)
+	if err != nil {
+		fmt.Println("Error opening config file:", err)
+		os.Exit(1)
+	}
+	defer file.Close()
 
-    fmt.Println("Sending query:", query)
-    conn.Write([]byte(query))
+	var config ClientConfig
+	decoder := json.NewDecoder(file)
+	err = decoder.Decode(&config)
+	if err != nil {
+		fmt.Println("Error decoding JSON:", err)
+		os.Exit(1)
+	}
 
-    buf := make([]byte, 4096)
-    n, err := conn.Read(buf)
-    if err != nil {
-        panic(err)
-    }
+	return config
+}
 
-    var responses []QueryResponse
-    err = json.Unmarshal(buf[:n], &responses)
-    if err != nil {
-        panic(err)
-    }
+func sendQuery(rootAddress, query string) {
+	conn, err := net.Dial("tcp", rootAddress)
+	if err != nil {
+		fmt.Println("Error connecting to root node:", err)
+		return
+	}
+	defer conn.Close()
 
-    fmt.Println("Received responses:")
-    for _, response := range responses {
-        fmt.Printf("File: %s, Occurrences: %d\n", response.Filename, response.Occurrences)
-    }
+	fmt.Printf("Sending query: %s\n", query)
+	conn.Write([]byte(query + "\n"))
+
+	reader := bufio.NewReader(conn)
+	fmt.Println("Created Reader")
+	response, err := reader.ReadString('\n')
+	if err != nil {
+		fmt.Println("Error reading response from root node:", err)
+		return
+	}
+	fmt.Printf("Received response: %s\n", response)
 }
